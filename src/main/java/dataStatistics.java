@@ -15,6 +15,7 @@ import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.datastream.WindowedStream;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.windowing.assigners.ProcessingTimeSessionWindows;
@@ -25,13 +26,17 @@ import org.apache.flink.util.Collector;
 
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
-import java.sql.Date;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.Date;
+import java.text.SimpleDateFormat;
+
 
 public class dataStatistics {
     public static void main(String[] args) throws Exception {
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
         //1.2设置并行度
         env.setParallelism(1);//设置并行度为1方便测试
         //TODO 2.检查点配置
@@ -52,7 +57,7 @@ public class dataStatistics {
 //TODO 3.FlinkCDC
         //3.1 创建MySQLSource
         SourceFunction<String> sourceFunction = PostgreSQLSource.<String>builder()
-                .hostname("192.168.20.66")
+                .hostname("127.0.0.1")
                 .port(5432)
                 .database("cdctest")
                 .schemaList("public")
@@ -68,7 +73,6 @@ public class dataStatistics {
         DataStreamSource<String> alldata = env.addSource(sourceFunction);
 
 
-//      alldata.filter(x -> JSONObject.parseObject(x).get("type").equals("insert")).print();
 
         SingleOutputStreamOperator<String> filterDs = alldata.filter(new FilterFunction<String>() {
             @Override
@@ -83,27 +87,38 @@ public class dataStatistics {
 
 
         // 数据库的表有些没有时间字段
-        ProcessingTimeSessionWindows processingSecondsSessionWindows = ProcessingTimeSessionWindows.withGap(Time.seconds(10));
-        ProcessingTimeSessionWindows processingMinusSessionWindows = ProcessingTimeSessionWindows.withGap(Time.minutes(1));
-        ProcessingTimeSessionWindows processingHourSessionWindows = ProcessingTimeSessionWindows.withGap(Time.hours(10));
-        ProcessingTimeSessionWindows processingDaysSessionWindows = ProcessingTimeSessionWindows.withGap(Time.days(7));
+        ProcessingTimeSessionWindows processingSecondsMinuteWindows = ProcessingTimeSessionWindows.withGap(Time.minutes(1));
+        ProcessingTimeSessionWindows processingHourSessionWindows = ProcessingTimeSessionWindows.withGap(Time.hours(1));
+        ProcessingTimeSessionWindows processingDaysSessionWindows = ProcessingTimeSessionWindows.withGap(Time.days(1));
 
         //x->代表所有的数据都会在一个窗口。
-         WindowedStream<String, String, TimeWindow> window = filterDs.keyBy(x -> "true").window(processingSecondsSessionWindows);
+        WindowedStream<String, String, TimeWindow> windowMinute = filterDs.keyBy(x -> "true").window(processingSecondsMinuteWindows);
 
-        SingleOutputStreamOperator<Datashow> resultDs = window.aggregate(new MyAgg(), new MyProcess());
-        resultDs.print();
+        WindowedStream<String, String, TimeWindow> windowHours = filterDs.keyBy(x -> "true").window(processingHourSessionWindows);
 
-        resultDs.addSink(JdbcSink.sink(
-                "insert into datashow (`database`, windowStart, windowEnd,count,systemTime) values (?, ?, ?, ?, ?)",
+        WindowedStream<String, String, TimeWindow> windowDays= filterDs.keyBy(x -> "true").window(processingDaysSessionWindows);
+
+
+
+        //每十秒新增的数据
+        SingleOutputStreamOperator<Datashow> resultMinute= windowMinute.aggregate(new MyAgg(), new MyProcess());
+        //每24小时新增的数据
+        SingleOutputStreamOperator<Datashow> resultHours = windowHours.aggregate(new MyAgg(), new MyProcess());
+        //每24小时新增的数据
+        SingleOutputStreamOperator<Datashow> resultDays = windowDays.aggregate(new MyAgg(), new MyProcess());
+
+
+        SinkFunction<Datashow> sink = JdbcSink.sink(
+                "insert into zhanshi.datashow (`databases`, windowStart, windowEnd,count,systemTime,sinkType) values (?, ?, ?, ?, ?,?)",
                 new JdbcStatementBuilder<Datashow>() {
                     @Override
                     public void accept(PreparedStatement preparedStatement, Datashow datashow) throws SQLException {
-                        preparedStatement.setString(1, datashow.getDatabase());
+                        preparedStatement.setString(1, datashow.getDatabases());
                         preparedStatement.setString(2, datashow.getWindowStart());
                         preparedStatement.setString(3, datashow.getWindowEnd());
                         preparedStatement.setInt(4, datashow.getCount());
-                        preparedStatement.setDate(5, datashow.getSystemTime());
+                        preparedStatement.setString(5, datashow.getSystemTime());
+                        preparedStatement.setString(6,datashow.getSinkType());
                     }
                 },
                 JdbcExecutionOptions.builder()
@@ -112,56 +127,95 @@ public class dataStatistics {
                         .withMaxRetries(5)
                         .build(),
                 new JdbcConnectionOptions.JdbcConnectionOptionsBuilder()
-                        .withUrl("jdbc:mysql://192.168.20.66:3306/zhanshi")
+                        .withUrl("jdbc:mysql://127.0.0.1:3306/zhanshi")
                         .withDriverName("com.mysql.jdbc.Driver")
                         .withUsername("root")
                         .withPassword("123456")
                         .build()
-        ));
+        );
+
+
+
+        resultMinute.addSink(sink);
+        resultHours.addSink(sink);
+        resultDays.addSink(sink);
 
         //执行
         env.execute();
     }
 
 
-public static class MyAgg implements AggregateFunction<String, Integer, String> {
-    @Override
-    public Integer createAccumulator() {
-        System.out.println("创建累加器");
-        return 0;
-    }
-    @Override
-    public Integer add(String s, Integer accumulator) {
-        return 1+accumulator;
+    public static class MyAgg implements AggregateFunction<String, Integer, String> {
+        @Override
+        public Integer createAccumulator() {
+            System.out.println("创建累加器");
+            return 0;
+        }
+
+        @Override
+        public Integer add(String s, Integer accumulator) {
+            return 1+accumulator;
+        }
+
+        @Override
+        public String getResult(Integer accumulator) {
+            return accumulator.toString();
+        }
+
+        @Override
+        public Integer merge(Integer integer, Integer acc1) {
+            System.out.println("调用merge方法");
+            return null;
+        }
     }
 
-    @Override
-    public String getResult(Integer accumulator) {
-        return accumulator.toString();
+    public static class MyProcess extends ProcessWindowFunction<String,Datashow,String,TimeWindow> {
+
+        @Override
+        public void process(String s, Context context, Iterable<String> elements, Collector<Datashow> collector) throws Exception {
+            long startTs = context.window().getStart();
+            long endTs = context.window().getEnd();
+
+            String windowStart = DateFormatUtils.format(startTs, "yyyy-MM-dd HH:mm:ss.SSS");
+            String windowEnd = DateFormatUtils.format(endTs, "yyyy-MM-dd HH:mm:ss.SSS");
+
+            //新增条数
+            int count = Integer.parseInt(elements.toString().replace("[","").replace("]",""));
+            //获取系统当前时间
+            String dateTime = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
+
+            //把毫秒变成秒
+            long timeDiffSeconds  = (endTs-startTs)/1000;
+            long timeDiffMinutes = timeDiffSeconds / 60;
+
+            String sinkType="";
+
+            if(timeDiffMinutes < 60){
+                // 1小时内
+                sinkType = "minute";
+
+            }else if(timeDiffMinutes < 24 * 60){
+                // 1天内
+                sinkType = "hour";
+
+            }else{
+                sinkType = "day";
+            }
+
+            System.out.println("diffMinutes： "+timeDiffMinutes);
+
+            Datashow datashow = Datashow.builder()
+                    .databases("cdctest")
+                    .windowStart(windowStart)
+                    .windowEnd(windowEnd)
+                    .count(count)
+                    .systemTime(dateTime)
+                    .sinkType(sinkType)
+                    .build();
+
+            collector.collect(datashow);
+        }
+
     }
 
-    @Override
-    public Integer merge(Integer integer, Integer acc1) {
-        System.out.println("调用merge方法");
-        return null;
-    }
 }
-
-public static class MyProcess extends ProcessWindowFunction<String,Datashow,String,TimeWindow> {
-
-    @Override
-    public void process(String s, Context context, Iterable<String> elements, Collector<Datashow> collector) throws Exception {
-        long startTs = context.window().getStart();
-        long endTs = context.window().getEnd();
-        String windowStart = DateFormatUtils.format(startTs, "yyyy-MM-dd HH:mm:ss.SSS");
-        String windowEnd = DateFormatUtils.format(endTs, "yyyy-MM-dd HH:mm:ss.SSS");
-        int count = Integer.parseInt(elements.toString().replace("[","").replace("]",""));
-        Date dateTime = new Date(System.currentTimeMillis());
-        Datashow datashow = Datashow.builder().database("cdctest").windowStart(windowStart).windowEnd(windowEnd).count(count).systemTime(dateTime).build();
-        collector.collect(datashow);
-    }
-
-}
-
-}
-
