@@ -1,3 +1,5 @@
+package windowSum;
+
 import com.alibaba.fastjson.JSONObject;
 import com.ververica.cdc.connectors.postgres.PostgreSQLSource;
 import org.apache.flink.api.common.functions.FilterFunction;
@@ -15,6 +17,7 @@ import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.util.Collector;
+import windowSum.MyDeserializationSchemaFunction;
 
 //这个是开启的全窗口来统计的
 public class processWindow {

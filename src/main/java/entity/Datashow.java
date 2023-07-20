@@ -3,13 +3,12 @@ package entity;
 import lombok.Builder;
 import lombok.Data;
 
-import java.sql.Date;
 
 @Data
 @Builder
 public class Datashow {
 
-    private String database;
+    private String databases;
 
     private String windowStart;
 
@@ -17,5 +16,7 @@ public class Datashow {
 
     private Integer count;
 
-    private Date systemTime;
+    private String systemTime;
+    /*每分钟、每小时、每天*/
+    private String  sinkType;
 }

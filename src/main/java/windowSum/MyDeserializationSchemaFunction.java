@@ -1,3 +1,4 @@
+package windowSum;
 
 import com.alibaba.fastjson.JSONObject;
 import com.ververica.cdc.debezium.DebeziumDeserializationSchema;
@@ -7,6 +8,7 @@ import org.apache.flink.util.Collector;
 import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
+
 
 /**
  * 自定义反序列化器，将FlinkCDC读取到的数据转为json格式
